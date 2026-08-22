@@ -8,10 +8,10 @@ import { USER_AGENT } from "./config";
 
 export default {
   async scheduled(event: ScheduledController, env: Env): Promise<void> {
-    // Cron chạy mỗi phút để gom đủ lượt parse trong hạn mức CPU 10 ms của gói
-    // Free. RSS thì không cần dày như vậy: cửa sổ feed của box đông nhất là
-    // ~51 phút, nên 5 phút một lần đã dư biên, và hỏi mỗi phút chỉ tổ làm
-    // phiền voz. Chia theo mốc thời gian nên không cần lưu trạng thái.
+    // RSS không cần hỏi dày như nhịp cron: cửa sổ feed của box đông nhất là
+    // ~51 phút, nên vài phút một lần đã dư biên, và hỏi mỗi lượt chỉ tổ làm
+    // phiền voz. Chia theo mốc thời gian nên không cần lưu trạng thái, đổi
+    // lại RSS_EVERY_MINUTES phải là bội số của chu kỳ cron.
     const everyMinutes = numVar(env.RSS_EVERY_MINUTES, 5);
     const minute = Math.floor(event.scheduledTime / 60_000);
     await crawlAndLog(env, { skipRss: minute % everyMinutes !== 0 });
@@ -290,6 +290,8 @@ async function runView(env: Env, key: string): Promise<Response> {
   <tr><td>Trang thread đã parse</td><td>${stats.pages}</td></tr>
   <tr><td>Thread mới</td><td>${stats.newThreads}</td></tr>
   <tr><td>Bài mới</td><td>${stats.newPosts}</td></tr>
+  <tr><td>Bài ghi lại vì nội dung đổi</td><td>${stats.rewritten}</td></tr>
+  <tr><td>Bài bỏ qua vì y nguyên</td><td>${stats.skipped}</td></tr>
   <tr><td>Phát hiện bị xóa</td><td>${stats.goneFound}</td></tr>
 </table>
 ${stats.notes.length ? `<h3 style="font-size:15px;margin:22px 0 8px">Ghi chú</h3><ul class="muted">${stats.notes.map((n) => `<li>${escapeHtml(n)}</li>`).join("")}</ul>` : ""}

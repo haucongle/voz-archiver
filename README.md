@@ -3,7 +3,7 @@
 Lưu lại thread và toàn bộ reply trên voz.vn trước khi mod xóa, chạy hoàn toàn
 trên Cloudflare Workers nên không cần máy nào bật 24/7.
 
-Cứ mỗi phút, Worker đọc danh sách thread cần tải rồi bóc thêm vài trang; năm
+Cứ hai phút, Worker đọc danh sách thread cần tải rồi bóc thêm vài trang; sáu
 phút một lần nó hỏi RSS của các box bạn theo dõi để phát hiện thread mới. Khi
 voz trả về 404 hoặc 403 cho một thread đã lưu, nó đánh dấu thread đó là đã bị
 xóa nhưng vẫn giữ nguyên nội dung. Có giao diện web để đọc lại và tìm kiếm toàn
@@ -48,17 +48,33 @@ liên tiếp là 8,6 ms, còn ba trang thì thành 12,9 ms và Worker bị cắt
 RSS và sổ nhật ký, nên trần thật là khoảng 9 trang mỗi lượt. Cao hơn mức CPU
 cho phép nên không vướng.
 
-**Ghi D1, 100 nghìn dòng mỗi ngày.** Đây mới là chỗ căng. Chạy hết công suất
-2.880 trang/ngày, mỗi trang 20 bài, mỗi bài kéo theo 1–2 dòng nữa cho chỉ mục
-FTS, ước tính rơi vào khoảng 150 nghìn dòng ghi mỗi ngày. Vượt trần, và khi
-vượt thì D1 trả lỗi cho tới 00:00 UTC hôm sau. Cách chữa gọn nhất là sửa
-`savePage` để bỏ qua những bài đã lưu mà nội dung không đổi, vì phần lớn lượt
-tải lại trang cuối chỉ thêm được vài bài mới; hiện chưa làm. Cách chữa lười hơn
-là bớt box theo dõi hoặc giãn cron.
+**Ghi D1, 100 nghìn dòng mỗi ngày.** Đây là cái trần thật sự quyết định thiết
+kế, và nó đắt hơn nhiều so với cảm giác ban đầu. Đo trực tiếp bằng cách chèn
+một bài rồi đọc `rows_written` mà D1 trả về:
+
+| Thao tác | Dòng ghi |
+|---|---|
+| Chèn một bài | **4** (1 cho `posts`, 3 cho các bảng ngầm của FTS5) |
+| Xóa một bài | 2 |
+
+Bốn dòng mỗi bài, chia cho trần 100 nghìn, ra **tối đa 25 nghìn bài mỗi ngày**.
+Chỉ mục toàn văn chiếm 3 trong 4 dòng đó, tức 75% ngân sách ghi chỉ để phục vụ
+ô tìm kiếm.
+
+Đây là lý do cron để 2 phút chứ không phải 1. Lịch 1 phút cho khoảng 43 nghìn
+bài mỗi ngày, gấp 1,7 lần trần, và khi chạm trần thì D1 từ chối mọi truy vấn
+cho tới 00:00 UTC hôm sau — nghĩa là giao diện đọc cũng chết chứ không riêng
+phần thu thập. Lịch 2 phút cho khoảng 21 nghìn bài, vừa lọt nhưng không dư
+nhiều, nên vẫn nên thỉnh thoảng ngó `npx wrangler d1 info voz-archive`.
+
+Muốn archive nhanh hơn mà vẫn miễn phí thì phải bỏ chỉ mục FTS: còn 1 dòng mỗi
+bài, đủ chỗ cho 100 nghìn bài/ngày. Đổi lại tìm kiếm phải chuyển sang quét
+`LIKE`, mà mỗi lần quét đọc hết bảng nên trần 5 triệu dòng đọc/ngày chỉ cho
+chừng vài chục lượt tìm.
 
 Nếu không muốn bận tâm mấy chuyện trên thì gói Paid 5 USD/tháng nâng CPU lên
 30 giây, subrequest lên 10 nghìn, và ghi D1 lên 50 triệu dòng/tháng. Lúc đó cứ
-để `MAX_PAGES_PER_RUN` vài trăm và quên nó đi.
+để `MAX_PAGES_PER_RUN` vài trăm, hạ cron về 1 phút, và quên nó đi.
 
 ## Cài đặt
 
@@ -110,8 +126,12 @@ chữ không quan trọng vì XenForo chỉ đọc số.
 | `MAX_PAGES_PER_THREAD` | 2 | Chặn một thread khổng lồ nuốt hết ngân sách |
 | `MAX_NEW_THREADS` | 2 | Trần thread mới xử lý mỗi lượt |
 | `ACTIVE_WINDOW_HOURS` | 72 | Quá hạn này thì thôi theo dõi reply mới |
-| `RSS_EVERY_MINUTES` | 5 | Cron chạy mỗi phút, RSS chỉ hỏi ngần này phút một lần |
+| `RSS_EVERY_MINUTES` | 6 | Phải là bội số của chu kỳ cron, xem ghi chú bên dưới |
 | `PARSE_MODE` | `fast` | `full` và `text` là hai chế độ HTMLRewriter cũ |
+
+`RSS_EVERY_MINUTES` được so bằng phép chia dư trên mốc thời gian nên không cần
+lưu trạng thái, đổi lại nó phải là bội số của chu kỳ cron. Cron 2 phút chỉ chạy
+vào phút chẵn, nên đặt 5 thì RSS hóa ra 10 phút một lần chứ không phải 5.
 
 ## Hai parser, và vì sao giữ cả hai
 
@@ -133,11 +153,19 @@ trong bản cũ; vá đi thì mất luôn bằng chứng.
 ## Vài con số đo được
 
 Feed RSS của box Chuyện trò linh tinh chứa 20 item và trải dài khoảng **51
-phút**. Đó là cửa sổ để bắt kịp thread mới, và cũng là lý do RSS chỉ cần hỏi 5
-phút một lần dù cron chạy mỗi phút. Cron dày lên không phải để phát hiện nhanh
-hơn mà để gom đủ lượt parse trong hạn mức CPU: lịch 5 phút cho 288 lượt/ngày,
-nhân 2 trang là 576, không đủ so với khoảng 1.130 trang/ngày mà riêng box đông
-nhất cần cho thread mới. Lịch 1 phút cho 1.440 lượt, tức 2.880 trang/ngày.
+phút**. Đó là cửa sổ để bắt kịp thread mới, và cũng là lý do RSS chỉ cần hỏi
+sáu phút một lần.
+
+Với cron 2 phút thì được 720 lượt mỗi ngày, nhân 2 trang là 1.440 trang. Riêng
+box Chuyện trò linh tinh sinh ra chừng 565 thread mới mỗi ngày, mỗi thread cần
+tối thiểu 2 trang, tức đã ăn hết 1.130 trang. Nói thẳng ra: trên gói Free,
+archiver vừa đủ bắt kịp thread mới của hai box và gần như không còn ngân sách
+để quay lại theo dõi reply. Muốn theo cả reply thì phải bớt box, hoặc lên Paid.
+
+Việc `savePage` bỏ qua bài không đổi giúp ích ở đây, nhưng chỉ ở trạng thái ổn
+định. Đo thực tế khi tải lại một trang đã lưu: 46 trên 47 bài được bỏ qua. Còn
+trong giai đoạn khai phá thì gần như mọi bài đều mới, và bài mới thì bắt buộc
+phải ghi — không có lượt ghi thừa nào để cắt.
 
 Kho lưu tốn khoảng **2,9 KB mỗi bài** kể cả chỉ mục tìm kiếm, đo trên 307 bài
 thật. Gói Free giới hạn **500 MB mỗi database** — con số 5 GB hay gặp là hạn
@@ -198,9 +226,9 @@ giữa của thread dài không được theo dõi.
 
 `robots.txt` của voz cho phép crawl (`Allow: /`, chỉ chặn `/admin.php` và một số
 bot AI có tên cụ thể). Mặc định archiver nghỉ 700 ms giữa hai request và chỉ
-lấy 2 trang mỗi phút, tức tải nhẹ hơn một người đang lướt web bình thường. Đừng
-hạ con số 700 ms đó, và đừng bỏ `RSS_EVERY_MINUTES` để hỏi feed mỗi phút — cửa
-sổ feed là 51 phút nên làm vậy chẳng được gì.
+lấy 2 trang mỗi hai phút, tức tải nhẹ hơn một người đang lướt web bình thường.
+Đừng hạ con số 700 ms đó, và đừng hạ `RSS_EVERY_MINUTES` để hỏi feed dày hơn —
+cửa sổ feed là 51 phút nên làm vậy chẳng được gì.
 
 voz cũng đặt `Content-Signal: ai-train=no, use=reference`. Đọc và lưu trữ cá
 nhân nằm trong phạm vi cho phép, nhưng đừng đem kho này đi train model hay

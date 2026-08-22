@@ -9,6 +9,10 @@ export interface CrawlStats {
   pages: number;
   newThreads: number;
   newPosts: number;
+  /** Bài đã có mà nội dung đổi nên phải ghi lại. */
+  rewritten: number;
+  /** Bài bỏ qua vì y nguyên. Tỷ lệ này càng cao thì càng đỡ tốn hạn mức ghi. */
+  skipped: number;
   goneFound: number;
   notes: string[];
 }
@@ -58,6 +62,8 @@ export async function runCrawl(env: Env, opts: CrawlOptions = {}): Promise<Crawl
     pages: 0,
     newThreads: 0,
     newPosts: 0,
+    rewritten: 0,
+    skipped: 0,
     goneFound: 0,
     notes: [],
   };
@@ -162,6 +168,8 @@ export async function runCrawl(env: Env, opts: CrawlOptions = {}): Promise<Crawl
 
       const saved = await store.savePage(env.DB, thread.id, page, parsed.posts);
       stats.newPosts += saved.inserted;
+      stats.rewritten += saved.rewritten;
+      stats.skipped += saved.skipped;
       stats.goneFound += saved.goneFound;
 
       pagesSeen = Math.max(pagesSeen, page);

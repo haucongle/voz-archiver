@@ -8,14 +8,14 @@
     "enabled": true
   },
 
-  // Chạy mỗi phút. Không phải vì cần phát hiện thread mới nhanh đến thế —
-  // cửa sổ RSS của box đông nhất là ~51 phút — mà vì hạn mức CPU 10 ms của
-  // gói Free chỉ cho parse 2-3 trang mỗi lượt, nên phải bù bằng số lượt.
-  // Lịch 5 phút cho 288 lượt/ngày, không đủ so với nhu cầu ~1.100 trang/ngày
-  // của riêng box 17; lịch 1 phút cho 1.440 lượt, tức ~4.300 trang/ngày.
-  // RSS vẫn chỉ hỏi 5 phút một lần, xem RSS_EVERY_MINUTES.
+  // Hai phút một lượt. Con số này không do CPU quyết định mà do hạn mức ghi
+  // của D1 bản free: đo thực tế thì lưu một bài tốn 4 dòng ghi (1 cho bảng
+  // posts, 3 cho các bảng ngầm của chỉ mục FTS5), nên trần 100 nghìn dòng
+  // mỗi ngày quy ra tối đa 25 nghìn bài. Lịch 1 phút cho ~43 nghìn bài/ngày,
+  // vượt gấp 1,7 lần và D1 cắt truy vấn tới 00:00 UTC. Lịch 2 phút cho
+  // ~21 nghìn bài, vừa lọt.
   "triggers": {
-    "crons": ["* * * * *"]
+    "crons": ["*/2 * * * *"]
   },
 
   "d1_databases": [
@@ -48,7 +48,10 @@
     "MAX_NEW_THREADS": "2",
     // Thread cũ hơn ngần này (giờ) thì ngừng kiểm tra reply mới.
     "ACTIVE_WINDOW_HOURS": "72",
-    // Cron chạy mỗi phút nhưng RSS chỉ cần hỏi ngần này phút một lần.
-    "RSS_EVERY_MINUTES": "5"
+    // RSS chỉ cần hỏi ngần này phút một lần, cửa sổ feed là ~51 phút nên
+    // thừa biên. Phải đặt là bội số của chu kỳ cron, nếu không sẽ thưa hơn ý
+    // muốn: cron 2 phút chỉ chạy vào phút chẵn, nên để 5 thì RSS hóa ra 10
+    // phút một lần chứ không phải 5.
+    "RSS_EVERY_MINUTES": "6"
   }
 }

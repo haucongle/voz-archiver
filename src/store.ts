@@ -29,6 +29,11 @@ export async function upsertThreadsFromRss(
   if (items.length === 0) return;
   const ts = now();
 
+  // Mệnh đề WHERE ở cuối là để tiết kiệm lượt ghi. Feed trả về 20 item mỗi
+  // lần hỏi và phần lớn lặp lại y nguyên so với lần trước; không có nó thì
+  // riêng khâu đọc RSS đã ngốn hơn 11 nghìn dòng ghi mỗi ngày mà chẳng thay
+  // đổi gì. Bỏ qua cũng đồng nghĩa slug và tiêu đề chỉ được làm mới khi
+  // thread có hoạt động mới, và như vậy là đủ.
   const stmt = db.prepare(
     `INSERT INTO threads (id, slug, title, forum_id, forum_name, author, first_seen, last_activity)
      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
@@ -36,7 +41,8 @@ export async function upsertThreadsFromRss(
        slug          = excluded.slug,
        title         = excluded.title,
        forum_name    = excluded.forum_name,
-       last_activity = MAX(COALESCE(threads.last_activity, 0), excluded.last_activity)`,
+       last_activity = MAX(COALESCE(threads.last_activity, 0), excluded.last_activity)
+     WHERE excluded.last_activity > COALESCE(threads.last_activity, 0)`,
   );
 
   await db.batch(
@@ -116,43 +122,105 @@ export async function finishThreadCrawl(
 
 export interface SaveResult {
   inserted: number;
+  /** Bài đã có nhưng nội dung đổi nên phải ghi đè. */
+  rewritten: number;
+  /** Bài đã có và y nguyên, không tốn lượt ghi nào. */
+  skipped: number;
   goneFound: number;
 }
 
+const encoder = new TextEncoder();
+const byteLen = (s: string) => encoder.encode(s).length;
+
+/**
+ * Ghi lại một trang, nhưng chỉ đụng vào những bài thật sự đổi.
+ *
+ * Bản đầu upsert cả 20 bài mỗi lần chạm vào một trang. Đó là cách nhanh nhất
+ * đốt sạch hạn mức 100 nghìn dòng ghi mỗi ngày của D1 bản free, vì tải lại
+ * trang cuối của một thread đang sống thường chỉ thêm được một hai bài mới,
+ * mà mỗi lượt ghi đè còn kéo theo trigger xóa-rồi-chèn của chỉ mục FTS. Nó
+ * cũng là khoản CPU đắt nhất của mỗi lượt chạy, vì phải gắn tham số cho vài
+ * chục chuỗi HTML dài mấy KB.
+ */
 export async function savePage(
   db: D1Database,
   threadId: number,
   page: number,
   posts: ParsedPost[],
 ): Promise<SaveResult> {
-  if (posts.length === 0) return { inserted: 0, goneFound: 0 };
+  if (posts.length === 0) return { inserted: 0, rewritten: 0, skipped: 0, goneFound: 0 };
 
   const ids = posts.map((p) => p.id);
   const placeholders = ids.map((_, i) => `?${i + 1}`).join(",");
 
+  // CAST sang BLOB để LENGTH trả về số byte, khớp với TextEncoder bên JS.
+  // LENGTH trên TEXT đếm ký tự Unicode, còn `.length` của JS đếm đơn vị
+  // UTF-16, nên bài nào có emoji là hai bên lệch nhau và bài đó sẽ bị coi
+  // là đổi mãi mãi.
   const existing = await db
-    .prepare(`SELECT id FROM posts WHERE id IN (${placeholders})`)
+    .prepare(
+      `SELECT id, page, gone_at,
+              LENGTH(CAST(html AS BLOB)) AS hlen,
+              LENGTH(CAST(body AS BLOB)) AS blen
+         FROM posts WHERE id IN (${placeholders})`,
+    )
     .bind(...ids)
-    .all<{ id: number }>();
-  const known = new Set((existing.results ?? []).map((r) => r.id));
+    .all<{ id: number; page: number; gone_at: number | null; hlen: number | null; blen: number | null }>();
+
+  const known = new Map((existing.results ?? []).map((r) => [r.id, r]));
+
+  const changed: ParsedPost[] = [];
+  const metaOnly: number[] = [];
+  let fresh = 0;
+
+  for (const p of posts) {
+    const prev = known.get(p.id);
+    if (!prev) {
+      changed.push(p);
+      fresh++;
+      continue;
+    }
+    // So kích thước thay cho băm nội dung: rẻ hơn nhiều, và một lần sửa bài
+    // giữ nguyên đúng từng byte thì cũng chẳng có gì đáng lưu lại.
+    if (prev.hlen !== byteLen(p.html) || prev.blen !== byteLen(p.body)) {
+      changed.push(p);
+      continue;
+    }
+    // Nội dung y nguyên nhưng bài đã trôi sang trang khác vì có bài phía
+    // trước bị xóa, hoặc từng bị đánh dấu xóa mà nay xuất hiện lại. Sửa mỗi
+    // siêu dữ liệu thì không động tới `body` nên trigger FTS không chạy.
+    if (prev.page !== page || prev.gone_at !== null) metaOnly.push(p.id);
+  }
 
   const ts = now();
-  const upsert = db.prepare(
-    `INSERT INTO posts (id, thread_id, page, position, author, posted_at, html, body, archived_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-     ON CONFLICT(id) DO UPDATE SET
-       page     = excluded.page,
-       position = excluded.position,
-       html     = excluded.html,
-       body     = excluded.body,
-       gone_at  = NULL`,
-  );
 
-  await db.batch(
-    posts.map((p) =>
-      upsert.bind(p.id, threadId, page, p.position, p.author, p.postedAt, p.html, p.body, ts),
-    ),
-  );
+  if (changed.length > 0) {
+    const upsert = db.prepare(
+      `INSERT INTO posts (id, thread_id, page, position, author, posted_at, html, body, archived_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+       ON CONFLICT(id) DO UPDATE SET
+         page     = excluded.page,
+         position = excluded.position,
+         html     = excluded.html,
+         body     = excluded.body,
+         gone_at  = NULL`,
+    );
+    await db.batch(
+      changed.map((p) =>
+        upsert.bind(p.id, threadId, page, p.position, p.author, p.postedAt, p.html, p.body, ts),
+      ),
+    );
+  }
+
+  if (metaOnly.length > 0) {
+    await db
+      .prepare(
+        `UPDATE posts SET page = ?1, gone_at = NULL
+          WHERE id IN (${metaOnly.map((_, i) => `?${i + 2}`).join(",")})`,
+      )
+      .bind(page, ...metaOnly)
+      .run();
+  }
 
   // Bài từng lưu ở trang này mà giờ không còn nữa: mod đã xóa lẻ.
   // Chỉ chạy khi trang trả về ít nhất một bài, tránh việc parser hỏng
@@ -167,7 +235,9 @@ export async function savePage(
     .run();
 
   return {
-    inserted: posts.length - known.size,
+    inserted: fresh,
+    rewritten: changed.length - fresh,
+    skipped: posts.length - changed.length,
     goneFound: goneRes.meta?.changes ?? 0,
   };
 }
