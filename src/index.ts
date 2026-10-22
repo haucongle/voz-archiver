@@ -10,11 +10,26 @@ export default {
   async scheduled(event: ScheduledController, env: Env): Promise<void> {
     // RSS không cần hỏi dày như nhịp cron: cửa sổ feed của box đông nhất là
     // ~51 phút, nên vài phút một lần đã dư biên, và hỏi mỗi lượt chỉ tổ làm
-    // phiền voz. Chia theo mốc thời gian nên không cần lưu trạng thái, đổi
-    // lại RSS_EVERY_MINUTES phải là bội số của chu kỳ cron.
+    // phiền voz. Chia theo mốc thời gian nên không cần lưu trạng thái.
+    // Cron chỉ chạy ở những phút cách nhau `cronMinutes`, nên "trúng mốc" là
+    // dư của phép chia nằm trong khoảng [0, cronMinutes). CRON_EVERY_MINUTES
+    // phải khớp lịch cron thật: cron mỗi giờ mà để 2 thì phút :02 luôn có dư
+    // 2 và RSS bị bỏ qua vĩnh viễn, còn đặt 60 thì RSS chạy ở mọi lượt.
     const everyMinutes = numVar(env.RSS_EVERY_MINUTES, 5);
+    const cronMinutes = numVar(env.CRON_EVERY_MINUTES, 2);
     const minute = Math.floor(event.scheduledTime / 60_000);
-    await crawlAndLog(env, { skipRss: minute % everyMinutes !== 0 });
+    await crawlAndLog(env, { skipRss: minute % everyMinutes >= cronMinutes });
+
+    try {
+      const pruned = await store.pruneOldPosts(
+        env.DB,
+        numVar(env.PRUNE_AFTER_DAYS, 14),
+        numVar(env.PRUNE_POSTS_PER_RUN, 15),
+      );
+      if (pruned.posts || pruned.threads) console.log("prune", JSON.stringify(pruned));
+    } catch (e) {
+      console.error("prune lỗi", e instanceof Error ? e.message : String(e));
+    }
   },
 
   async fetch(req: Request, env: Env): Promise<Response> {
@@ -87,6 +102,8 @@ async function route(url: URL, env: Env, key: string): Promise<Response> {
       return statusView(env, key);
     case "/run":
       return runView(env, key);
+    case "/prune":
+      return pruneView(env, key, url);
     case "/bench":
       return benchView(env, key, url);
     default:
@@ -296,6 +313,33 @@ async function runView(env: Env, key: string): Promise<Response> {
 </table>
 ${stats.notes.length ? `<h3 style="font-size:15px;margin:22px 0 8px">Ghi chú</h3><ul class="muted">${stats.notes.map((n) => `<li>${escapeHtml(n)}</li>`).join("")}</ul>` : ""}
 <p style="margin-top:22px"><a href="/?key=${k}">Về danh sách</a></p>`);
+}
+
+/**
+ * Dọn tay một lô, dùng cho lần dọn đầu khi kho đã quá tải. Không tự lặp: mỗi
+ * lần gọi chỉ xóa `n` bài rồi báo số dòng ghi, để người chạy tự canh hạn mức
+ * 100k dòng/ngày của D1.
+ *
+ * Tham số: ?n=500 &days=14 &shrink=1 (đặt html về NULL trước, khi DB đã đầy)
+ */
+async function pruneView(env: Env, key: string, url: URL): Promise<Response> {
+  const n = Math.min(5000, Math.max(1, Number(url.searchParams.get("n")) || 200));
+  const days = Math.max(1, Number(url.searchParams.get("days")) || numVar(env.PRUNE_AFTER_DAYS, 14));
+  const shrink = url.searchParams.get("shrink") === "1";
+  const k = encodeURIComponent(key);
+
+  const r = await store.pruneOldPosts(env.DB, days, n, shrink);
+  const again = `/prune?key=${k}&n=${n}&days=${days}${shrink ? "&shrink=1" : ""}`;
+
+  return layout("Dọn kho", key, `
+<table class="stats">
+  <tr><td>Giữ thread còn sống trong</td><td>${days} ngày</td></tr>
+  <tr><td>Bài đã xóa</td><td>${r.posts}</td></tr>
+  <tr><td>Thread đã xóa</td><td>${r.threads}</td></tr>
+  <tr><td>Dòng D1 đã ghi</td><td>${r.rowsWritten}</td></tr>
+</table>
+<p class="muted">${r.posts === 0 ? "Không còn gì để dọn." : "Còn thì bấm lại để dọn lô tiếp."}</p>
+<p style="margin-top:22px"><a href="${again}">Dọn lô tiếp</a> · <a href="/status?key=${k}">Tình trạng</a></p>`);
 }
 
 /**

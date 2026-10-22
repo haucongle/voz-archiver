@@ -52,6 +52,17 @@
     // thừa biên. Phải đặt là bội số của chu kỳ cron, nếu không sẽ thưa hơn ý
     // muốn: cron 2 phút chỉ chạy vào phút chẵn, nên để 5 thì RSS hóa ra 10
     // phút một lần chứ không phải 5.
-    "RSS_EVERY_MINUTES": "6"
+    "RSS_EVERY_MINUTES": "6",
+    // Chu kỳ cron ở trên, tính bằng phút. Đổi lịch cron thì đổi cả số này.
+    "CRON_EVERY_MINUTES": "2",
+    // D1 Free chặn ở 500 MB mỗi database. Không dọn thì kho đầy sau khoảng
+    // một tháng. Thread còn sống im quá ngần này ngày thì xóa; thread đã bị
+    // voz xóa thì giữ mãi. Đo trên 143 thread đã mất: 97% biến mất trong 14
+    // ngày đầu.
+    "PRUNE_AFTER_DAYS": "14",
+    // Trần mỗi lượt cron. Mỗi bài xóa tốn khoảng 4 dòng ghi (1 cho posts, 3
+    // cho FTS5): 15 bài x 720 lượt = ~43 nghìn dòng/ngày nếu lúc nào cũng có
+    // gì để dọn, nhưng thực tế chỉ bằng tốc độ bài mới vào.
+    "PRUNE_POSTS_PER_RUN": "15"
   }
 }

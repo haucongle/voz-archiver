@@ -18,6 +18,12 @@ export interface Env {
   PARSE_MODE?: string;
   /** Cứ ngần này phút thì đọc RSS một lần, dù cron chạy mỗi phút. */
   RSS_EVERY_MINUTES?: string;
+  /** Chu kỳ cron thật (phút), để chia mốc RSS không rơi vào khoảng cron không bao giờ chạy tới. */
+  CRON_EVERY_MINUTES?: string;
+  /** Thread còn sống không có hoạt động quá ngần này ngày thì bị dọn khỏi kho. */
+  PRUNE_AFTER_DAYS?: string;
+  /** Số bài tối đa dọn mỗi lượt cron. Mỗi bài xóa tốn khoảng 4 dòng ghi D1. */
+  PRUNE_POSTS_PER_RUN?: string;
 }
 
 export function numVar(raw: string | undefined, fallback: number): number {

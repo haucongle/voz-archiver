@@ -21,6 +21,13 @@ CREATE TABLE IF NOT EXISTS threads (
 
 CREATE INDEX IF NOT EXISTS idx_threads_activity ON threads (last_activity DESC);
 CREATE INDEX IF NOT EXISTS idx_threads_gone     ON threads (gone_at) WHERE gone_at IS NOT NULL;
+-- Các chỉ mục dưới đây để không truy vấn nào phải quét nguyên bảng: D1 Free
+-- chỉ cho đọc 5 triệu dòng mỗi ngày và mỗi dòng quét qua đều bị tính.
+-- Biểu thức phải khớp từng chữ với ORDER BY trong listView.
+CREATE INDEX IF NOT EXISTS idx_threads_recent   ON threads (COALESCE(last_activity, first_seen) DESC);
+CREATE INDEX IF NOT EXISTS idx_threads_new      ON threads (id) WHERE gone_at IS NULL AND last_crawled IS NULL;
+CREATE INDEX IF NOT EXISTS idx_threads_backlog  ON threads (id) WHERE gone_at IS NULL AND pages_seen < page_count;
+CREATE INDEX IF NOT EXISTS idx_threads_live     ON threads (last_activity) WHERE gone_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS posts (
   id          INTEGER PRIMARY KEY,      -- post id của voz, cũng là rowid cho FTS
@@ -38,6 +45,7 @@ CREATE TABLE IF NOT EXISTS posts (
 
 CREATE INDEX IF NOT EXISTS idx_posts_thread ON posts (thread_id, posted_at, id);
 CREATE INDEX IF NOT EXISTS idx_posts_page   ON posts (thread_id, page);
+CREATE INDEX IF NOT EXISTS idx_posts_gone   ON posts (thread_id) WHERE gone_at IS NOT NULL;
 
 -- remove_diacritics 2 cho phép gõ không dấu vẫn tìm ra bài có dấu.
 CREATE VIRTUAL TABLE IF NOT EXISTS posts_fts USING fts5 (

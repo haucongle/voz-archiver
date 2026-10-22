@@ -65,22 +65,102 @@ export async function pickThreadsToCrawl(
   activeWindowHours: number,
 ): Promise<ThreadRow[]> {
   const cutoff = now() - activeWindowHours * 3600;
+  // Ba tầng loại trừ nhau, mỗi tầng đi qua một chỉ mục riêng. Bản cũ gộp cả ba
+  // vào một WHERE có OR rồi ORDER BY biểu thức nên SQLite quét nguyên bảng
+  // threads ở mọi lượt cron (720 lượt/ngày), đó là khoản đọc dòng đắt nhất.
   const res = await db
     .prepare(
-      `SELECT * FROM threads
-        WHERE gone_at IS NULL
-          AND (last_crawled IS NULL
-               OR pages_seen < page_count
-               OR (COALESCE(last_activity, 0) > last_crawled
-                   AND COALESCE(last_activity, 0) >= ?1))
-        ORDER BY (last_crawled IS NULL) DESC,
-                 (pages_seen < page_count) DESC,
-                 COALESCE(last_activity, 0) DESC
-        LIMIT ?2`,
+      `SELECT * FROM (
+         SELECT * FROM (SELECT *, 0 AS tier FROM threads
+            WHERE gone_at IS NULL AND last_crawled IS NULL
+            ORDER BY id DESC LIMIT ?2)
+         UNION ALL
+         SELECT * FROM (SELECT *, 1 AS tier FROM threads
+            WHERE gone_at IS NULL AND pages_seen < page_count AND last_crawled IS NOT NULL
+            ORDER BY id DESC LIMIT ?2)
+         UNION ALL
+         SELECT * FROM (SELECT *, 2 AS tier FROM threads
+            WHERE gone_at IS NULL AND last_crawled IS NOT NULL AND pages_seen >= page_count
+              AND last_activity >= ?1 AND last_activity > last_crawled
+            ORDER BY last_activity DESC LIMIT ?2)
+       ) ORDER BY tier, COALESCE(last_activity, 0) DESC
+       LIMIT ?2`,
     )
     .bind(cutoff, limit)
     .all<ThreadRow>();
   return res.results ?? [];
+}
+
+export interface PruneResult {
+  posts: number;
+  threads: number;
+  /** Số dòng D1 báo đã ghi, để canh hạn mức 100k/ngày. */
+  rowsWritten: number;
+}
+
+/**
+ * Dọn thread còn sống mà đã im quá `olderThanDays` ngày, để kho không tăng mãi
+ * rồi đụng trần 500 MB của D1 Free. Thread đã bị voz xóa, và thread có bài lẻ
+ * bị xóa, được giữ nguyên: đó mới là thứ kho này sinh ra để lưu.
+ *
+ * `shrinkFirst` chỉ dùng khi DB đã đầy. Xóa bài kéo theo ghi thêm vào bảng
+ * FTS nên có thể bị từ chối vì vượt trần; đặt `html` về NULL không đụng FTS và
+ * làm dòng nhỏ đi, nhờ vậy có chỗ trống để lượt xóa chạy được.
+ */
+export async function pruneOldPosts(
+  db: D1Database,
+  olderThanDays: number,
+  maxPosts: number,
+  shrinkFirst = false,
+): Promise<PruneResult> {
+  const cutoff = now() - olderThanDays * 86400;
+  const result: PruneResult = { posts: 0, threads: 0, rowsWritten: 0 };
+
+  // Đi từ bảng threads (nhỏ, có chỉ mục) rồi mới xuống posts theo thread_id.
+  // Bản đầu join từ posts nên mỗi lượt cron phải quét hàng trăm nghìn bài còn
+  // mới mà chưa đủ tuổi để dọn, và ngốn hạn mức đọc 5 triệu dòng/ngày.
+  // Thread chưa có `last_activity` (chưa từng thấy qua RSS) không bị dọn.
+  const victim = await db
+    .prepare(
+      `SELECT t.id FROM threads t
+        WHERE t.gone_at IS NULL AND t.last_crawled IS NOT NULL AND t.last_activity < ?1
+          AND NOT EXISTS (SELECT 1 FROM posts g WHERE g.thread_id = t.id AND g.gone_at IS NOT NULL)
+        ORDER BY t.last_activity LIMIT 1`,
+    )
+    .bind(cutoff)
+    .first<{ id: number }>();
+  if (!victim) return result;
+
+  const batchOfPosts = `SELECT id FROM posts WHERE thread_id = ?1 LIMIT ?2`;
+
+  if (shrinkFirst) {
+    const shrunk = await db
+      .prepare(`UPDATE posts SET html = NULL WHERE html IS NOT NULL AND id IN (${batchOfPosts})`)
+      .bind(victim.id, maxPosts)
+      .run();
+    result.rowsWritten += shrunk.meta.rows_written ?? 0;
+  }
+
+  const delPosts = await db
+    .prepare(`DELETE FROM posts WHERE id IN (${batchOfPosts})`)
+    .bind(victim.id, maxPosts)
+    .run();
+  result.posts = delPosts.meta.changes ?? 0;
+  result.rowsWritten += delPosts.meta.rows_written ?? 0;
+
+  // Chỉ xóa dòng thread khi bài đã hết sạch, nếu không thì lượt sau mất dấu
+  // phần còn lại.
+  const delThread = await db
+    .prepare(
+      `DELETE FROM threads WHERE id = ?1
+          AND NOT EXISTS (SELECT 1 FROM posts p WHERE p.thread_id = ?1)`,
+    )
+    .bind(victim.id)
+    .run();
+  result.threads = delThread.meta.changes ?? 0;
+  result.rowsWritten += delThread.meta.rows_written ?? 0;
+
+  return result;
 }
 
 export async function markThreadGone(

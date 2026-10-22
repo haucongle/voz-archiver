@@ -127,11 +127,33 @@ chữ không quan trọng vì XenForo chỉ đọc số.
 | `MAX_NEW_THREADS` | 2 | Trần thread mới xử lý mỗi lượt |
 | `ACTIVE_WINDOW_HOURS` | 72 | Quá hạn này thì thôi theo dõi reply mới |
 | `RSS_EVERY_MINUTES` | 6 | Phải là bội số của chu kỳ cron, xem ghi chú bên dưới |
+| `CRON_EVERY_MINUTES` | 2 | Chu kỳ cron thật, phải khớp `triggers.crons` |
+| `PRUNE_AFTER_DAYS` | 14 | Thread còn sống im quá ngần này ngày thì bị xóa |
+| `PRUNE_POSTS_PER_RUN` | 15 | Trần số bài dọn mỗi lượt cron |
 | `PARSE_MODE` | `fast` | `full` và `text` là hai chế độ HTMLRewriter cũ |
 
 `RSS_EVERY_MINUTES` được so bằng phép chia dư trên mốc thời gian nên không cần
 lưu trạng thái, đổi lại nó phải là bội số của chu kỳ cron. Cron 2 phút chỉ chạy
 vào phút chẵn, nên đặt 5 thì RSS hóa ra 10 phút một lần chứ không phải 5.
+`CRON_EVERY_MINUTES` phải khớp lịch cron thật: cron mỗi giờ mà để 2 thì RSS bị
+bỏ qua mãi, vì lượt nào cũng rơi vào phút có dư 2.
+
+## Dọn kho cũ
+
+D1 Free chặn mỗi database ở 500 MB, và khi chạm trần mọi lệnh ghi đều báo
+`Exceeded maximum DB size` nên crawler đứng yên mà không có lỗi rõ ràng. Mỗi
+lượt cron xóa tối đa `PRUNE_POSTS_PER_RUN` bài của thread còn sống đã im quá
+`PRUNE_AFTER_DAYS` ngày. Thread bị voz xóa, và thread có bài lẻ bị xóa, không
+bao giờ bị dọn: đó mới là thứ kho này sinh ra để giữ.
+
+Mốc 14 ngày chọn theo số đo trên 143 thread đã mất: 97% biến mất trong 14
+ngày đầu. Con số này lệch về phía sớm vì crawler chỉ kiểm tra thread trong 72
+giờ sau hoạt động cuối.
+
+Lần dọn đầu, khi kho đã quá tải, chạy tay theo lô để canh hạn mức ghi 100k
+dòng/ngày: mở `/prune?key=...&n=500`, xem số "Dòng D1 đã ghi" rồi bấm lô tiếp.
+Nếu bị từ chối vì DB đã đầy, thêm `&shrink=1`: nó đặt `html` về NULL trước (không
+đụng FTS) để có chỗ trống cho lượt xóa.
 
 ## Hai parser, và vì sao giữ cả hai
 
