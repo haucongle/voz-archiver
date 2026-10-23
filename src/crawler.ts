@@ -56,6 +56,34 @@ async function politeFetch(url: string, skipDelay = false): Promise<Response> {
   });
 }
 
+/**
+ * RSS bị voz trả 403 khi gọi từ IP của Workers dù từ máy thường vẫn 200, nên
+ * thử lần lượt vài kiểu request: header đúng của một trình đọc feed trước,
+ * rồi mới tới UA tự nhận diện. Kiểu nào qua được thì dừng, không thì trả về
+ * response cuối cùng cho phía gọi báo lỗi.
+ */
+async function fetchRss(url: string, skipDelay: boolean): Promise<Response> {
+  const attempts: Record<string, string>[] = [
+    {
+      "User-Agent": USER_AGENT,
+      Accept: "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.5",
+      "Accept-Language": "vi,en-US;q=0.8,en;q=0.6",
+      Referer: "https://voz.vn/",
+    },
+    {
+      "User-Agent": "Mozilla/5.0 (compatible; voz-archiver/1.0; personal RSS reader)",
+      Accept: "application/rss+xml, application/xml;q=0.9, */*;q=0.5",
+    },
+  ];
+  let res!: Response;
+  for (let i = 0; i < attempts.length; i++) {
+    if (i > 0 || !skipDelay) await sleep(FETCH_DELAY_MS);
+    res = await fetch(url, { headers: attempts[i] });
+    if (res.status !== 403) return res;
+  }
+  return res;
+}
+
 export async function runCrawl(env: Env, opts: CrawlOptions = {}): Promise<CrawlStats> {
   const stats: CrawlStats = {
     fetches: 0,
@@ -81,10 +109,11 @@ export async function runCrawl(env: Env, opts: CrawlOptions = {}): Promise<Crawl
   for (const forum of opts.skipRss ? [] : FORUMS) {
     if (stats.fetches >= maxFetches) break;
     try {
-      const res = await politeFetch(forumRssUrl(forum.id, forum.slug), stats.fetches === 0);
-      stats.fetches++;
+      const res = await fetchRss(forumRssUrl(forum.id, forum.slug), stats.fetches === 0);
+      stats.fetches += 2;
       if (!res.ok) {
-        stats.notes.push(`RSS box ${forum.id} trả về ${res.status}`);
+        const why = res.headers.get("cf-mitigated") || res.headers.get("server") || "";
+        stats.notes.push(`RSS box ${forum.id} trả về ${res.status}${why ? ` (${why})` : ""}`);
         continue;
       }
       const items = parseRss(await res.text(), forum.name);

@@ -257,12 +257,17 @@ async function threadView(env: Env, key: string, id: number): Promise<Response> 
 
 async function statusView(env: Env, key: string): Promise<Response> {
   const k = encodeURIComponent(key);
+  // COUNT(*) FROM posts quét hết ~200 nghìn dòng mỗi lần mở trang (D1 tính
+  // từng dòng quét), mở vài chục lần là cạn hạn mức đọc 5 triệu/ngày. Nên
+  // đếm bài bằng SUM(post_count) trên bảng threads (vài nghìn dòng); con số
+  // này lệch nhẹ so với thực tế vì post_count chỉ cập nhật khi crawl xong.
   const counts = await env.DB.prepare(
-    `SELECT (SELECT COUNT(*) FROM threads)                      AS threads,
-            (SELECT COUNT(*) FROM threads WHERE gone_at IS NOT NULL) AS threads_gone,
-            (SELECT COUNT(*) FROM posts)                        AS posts,
-            (SELECT COUNT(*) FROM posts WHERE gone_at IS NOT NULL)   AS posts_gone,
-            (SELECT COUNT(*) FROM threads WHERE pages_seen < page_count) AS backlog`,
+    `SELECT COUNT(*)                                        AS threads,
+            COUNT(gone_at)                                  AS threads_gone,
+            COALESCE(SUM(post_count), 0)                    AS posts,
+            COALESCE(SUM(pages_seen < page_count), 0)       AS backlog,
+            (SELECT COUNT(*) FROM posts WHERE gone_at IS NOT NULL) AS posts_gone
+       FROM threads`,
   ).first<Record<string, number>>();
 
   const { results: runs } = await env.DB.prepare(
